@@ -1,0 +1,989 @@
+---
+title: "Impact of adult sex ratio on mating, dispersal, and survival in bush-crickets"
+subtitle: | 
+  Exploration of dataset
+date: "`r format(Sys.time(), '%H:%M %d %B, %Y')`"
+author: 
+ - name: Luke Eberhart-Hertel
+   orcid: 0000-0001-7311-6088
+   email: luke.eberhart@bi.mpg.de
+   url: https://www.bi.mpg.de/person/115852/2867
+   equal-contributor: true
+   affiliations:
+     - ref: le
+ - name: Tuba Rizvi
+   equal-contributor: true
+   affiliations:
+     - ref: kr
+ - name: Martin Stoffel
+   equal-contributor: true
+   affiliations:
+     - ref: kr
+ - name: Karoline Fritzche
+   affiliations:
+     - ref: jh
+ - name: Jonothan Henshaw
+   affiliations:
+     - ref: jh
+ - name: Steve Ramm
+   affiliations:
+     - ref: sr
+ - name: Klaus Reinhold
+   affiliations:
+     - ref: kr
+author-notes:
+  equal-contributor: These authors contributed equally to this work.
+affiliations:
+ - id: le
+   number: 1
+   name: Department of Ornithology, Max Planck Institute for Biological Intelligence, Seewiesen, Germany
+ - id: kr
+   number: 2
+   name: Department of Evolutionary Biology, Bielefeld University, Germany
+ - id: jh
+   number: 2
+   name: Institute of Biology, Albert Ludwig University, Freiburg, Germany
+ - id: sr
+   number: 3
+   name: Ecobio, Université de Rennes, Rennes, France
+format: 
+  html:
+    toc: true
+    code-fold: true
+    code-tools: true
+    self-contained: true
+    highlight-style: github
+    theme: Cosmo
+execute:
+  warning: false
+  cache: true
+editor_options: 
+  chunk_output_type: console
+---
+```{r, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+options(repos = c(CRAN = "https://cran.rstudio.com"))
+```
+
+```{r, message=FALSE, results='hide', warning=FALSE, cache=FALSE, include=FALSE}
+## Prerequisites
+### R packages
+# -   The following packages are needed for analysis and can be easily installed from [CRAN](http://cran.r-project.org/) or GitHub by running the following code chunk:
+
+# a vector of all the packages needed in the project
+packages_required_in_project <- c("arm", "tidyverse",
+                                  "readxl",
+                                  "RMark",
+                                  "RColorBrewer",
+                                  "patchwork",
+                                  "mapview",
+                                  "lubridate",
+                                  "extrafont",
+                                  "here",
+                                  "DT",
+                                  "leaflet",
+                                  "sf",
+                                  "leafpop",
+                                  "tsibble",
+                                  "corrplot",
+                                  "gghalves",
+                                  "gam",
+                                  "pscl",
+                                  "gamlss",
+                                  "gt",
+                                  "lme4",
+                                  "ggpattern",
+                                  "gtsummary",
+                                  "effects",
+                                  "lattice",
+                                  "rptR",
+                                  "partR2",
+                                  "broom.mixed",
+                                  "forcats",
+                                  "glmmTMB",
+                                  "sysfonts",
+                                  "showtext",
+                                  "patchwork", "standardize",
+                                  "gridExtra", "nlme", "ggridges", "brms", "cmdstanr", "tidybayes", "DHARMa", "ggeffects", "glmmTMB", "emmeans", "smatr", "data.table")
+
+# of the required packages, check if some need to be installed
+new.packages <- 
+  packages_required_in_project[!(packages_required_in_project %in% 
+                                   installed.packages()[,"Package"])]
+
+# install all packages that are not locally available
+if(length(new.packages)) install.packages(new.packages)
+
+# load all the packages into the current R session
+lapply(packages_required_in_project, require, character.only = TRUE)
+```
+
+### Custom functions
+```{r}
+# scaled mass index calculation from Peig and Green (2009)
+# https://doi.org/10.1111/j.1365-2435.2010.01751.x
+scaledMassIndex <-
+  function(x, y, x.0 = mean(x)) {
+    logM.ols <- lm(log(y) ~ log(x))
+    logM.rob <- rlm(log(y) ~ log(x), method = "M")
+    b.msa.ols <- coef(sma(log(y) ~ log(x)))[2]
+    b.msa.rob <- coef(sma(log(y) ~ log(x), robust = T))[2]
+    SMI.ols <- y * (x.0 / x) ^ b.msa.ols
+    SMI.rob <- y * (x.0 / x) ^ b.msa.rob
+    res <- data.frame(SMI.ols, SMI.rob, x, y)
+    pred.DT <-
+      data.table(x = seq(min(x), max(x), length = 100)) %>%
+      .[, y.ols := predict(logM.ols, newdata = .) %>% exp] %>%
+      .[, y.rob := predict(logM.rob, newdata = .) %>% exp]
+    attr(res, "b.msa") <- c(ols = b.msa.ols, rob = b.msa.rob)
+    return(res)
+  }
+```
+
+## Opportunity for sexual selection
+#### data prepartation
+```{r}
+# import data
+sexual_network_tuba <- 
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "sexual_network", 
+             col_types = "text") %>% 
+  arrange(cage, batch, ASR_treatment, day, male_ID, female_ID)
+
+# tally the number of replicates
+sexual_network_tuba %>% 
+  select(cage, batch, ASR_treatment) %>%
+  distinct() %>% 
+  group_by(ASR_treatment, batch) %>% 
+  summarise(n_replicates = n())
+
+# tally the max number of days for each cage
+sexual_network_tuba %>% 
+  select(day, cage, batch, ASR_treatment) %>%
+  distinct() %>% 
+  group_by(ASR_treatment, batch, cage) %>% 
+  summarise(max_day = max(day, na.rm = TRUE),
+            min_day = min(day, na.rm = TRUE)) %>% 
+  select(cage, batch, ASR_treatment, min_day, max_day) %>% 
+  distinct() %>% 
+  arrange(cage, batch, ASR_treatment, min_day, max_day) %>% 
+  arrange(desc(max_day))
+
+# calculate sex-specific I_m for each cage
+male_I_m_cage_long <- 
+  sexual_network_tuba %>% 
+  group_by(male_ID, cage, batch, ASR_treatment) %>% 
+  summarise(n_mates = n_distinct(female_ID)) %>% 
+  ungroup() %>% 
+  group_by(cage, batch, ASR_treatment) %>% 
+  summarise(min_n_mates = min(n_mates),
+            max_n_mates = max(n_mates),
+            mean_n_mates = mean(n_mates),
+            var_I_m = ifelse(n() > 1, var(n_mates), 0),
+            # var_I_m_ = var(n_mates),
+            mean_I_m2 = mean_n_mates^2,
+            I_m = var_I_m/mean_I_m2) %>% #,
+            # I_m_ = var_I_m_/mean_I_m2) %>% 
+  mutate(sex = "M")
+  
+female_I_m_cage_long <- 
+  sexual_network_tuba %>% 
+  group_by(female_ID, cage, batch, ASR_treatment) %>% 
+  summarise(n_mates = n_distinct(male_ID)) %>% 
+  ungroup() %>% 
+  group_by(cage, batch, ASR_treatment) %>% 
+  summarise(min_n_mates = min(n_mates),
+            max_n_mates = max(n_mates),
+            mean_n_mates = mean(n_mates),
+            var_I_m = ifelse(n() > 1, var(n_mates), 0),
+            mean_I_m2 = mean_n_mates^2,
+            I_m = var_I_m/mean_I_m2) %>% 
+  mutate(sex = "F")
+
+# combine data and set classes
+I_m_cage_long <- 
+  bind_rows(male_I_m_cage_long, female_I_m_cage_long) %>% 
+  mutate(mate_availabilty = ifelse((sex == "F" & ASR_treatment == "MB") | (sex == "M" & ASR_treatment == "FB"), "high",
+                                   ifelse((sex == "F" & ASR_treatment == "FB") | (sex == "M" & ASR_treatment == "MB"), "low",
+                                          "equal"))) %>% 
+  mutate(ASR_treatment = factor(ASR_treatment,
+                                 levels = c("UB", "FB", "MB")),
+         mate_availabilty = factor(mate_availabilty,
+                                   levels = c("equal", "low", "high")),
+         sex = factor(sex, levels = c("F", "M")),
+         cage = factor(cage))
+```
+
+#### analysis
+#### mate availability
+##### 1. The Tweedie distribution fits our data’s structure  
+- **I_m** is continuous, non-negative, and skewed — not normally distributed.  
+- The Tweedie family handles this well, especially when there’s **a mix of small values and some zeros** without true zero inflation (confirmed by the DHARMa test).  
+- It accommodates a **variance–mean relationship** of the form *Var(y) ∝ μ^p*, which is common in ecological and behavioural count/variance measures.  
+
+##### 2. The log link is interpretable and stabilises variance  
+- The `link = "log"` models multiplicative (percentage) changes instead of additive ones.  
+- Coefficients can be exponentiated to give **ratios** between groups (e.g., effect of sex within high mate availability).  
+- It ensures predicted values are strictly positive, matching your biological measure (**I_m** can’t be negative).  
+
+##### 3. Model diagnostics support the choice  
+- **Zero-inflation test:** *p = 0.16* → no excess zeros beyond what Tweedie expects.  
+- **Dispersion test:** dispersion ≈ 1 (*p = 0.888*) → no over- or under-dispersion, meaning variance is well-modelled.  
+- **Simulated residual plots** showed no strong pattern → residual distribution matches model assumptions.  
+
+##### 4. Flexibility for mixed effects  
+- `glmmTMB` lets you include the **random intercept for cage** easily, capturing repeated measures/non-independence.  
+- Alternative families like Gaussian or Poisson would either misrepresent the skew, fail at zero handling, or give poorer diagnostics.  
+
+```{r}
+mod_tweedie_ma <- glmmTMB(
+  I_m ~ sex * mate_availabilty + batch + (1 | cage),
+  family = tweedie(link = "log"),
+  data = I_m_cage_long
+)
+summary(mod_tweedie_ma)
+
+sim_res <- simulateResiduals(mod_tweedie_ma)
+plot(sim_res)
+testZeroInflation(sim_res)
+testDispersion(sim_res)
+
+# Get predictions on the link scale (default)
+pred_link <- 
+  ggpredict(mod_tweedie_ma, terms = c("sex", "mate_availabilty")) %>% 
+  mutate(mate_availabilty = factor(group,
+                                   levels = c("low", "equal", "high")),
+         sex = factor(x, levels = c("F", "M"))) %>% 
+  filter(!is.na(mate_availabilty))
+
+# plot predicted effect sizes along with raw data
+ggplot() +
+  # Raw data
+  geom_jitter(
+    data = I_m_cage_long %>% mutate(mate_availabilty = factor(mate_availabilty,
+                                   levels = c("low", "equal", "high"))),
+    aes(x = mate_availabilty, y = I_m, color = sex),
+     position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.3),
+    alpha = 0.4, size = 2
+  ) +
+  
+  # Model predictions (points)
+  geom_point(
+    data = pred_link,
+    aes(x = mate_availabilty, y = predicted, color = sex),
+    position = position_dodge(width = 0.7),
+    size = 3
+  ) +
+  
+  # Prediction intervals (error bars)
+  geom_errorbar(
+    data = pred_link,
+    aes(x = mate_availabilty, y = predicted, color = sex,
+        ymin = conf.low, ymax = conf.high),
+    position = position_dodge(width = 0.7),
+    width = 0.2, alpha = 0.7
+  ) +
+  
+  labs(
+    x = "Manipulated mate availability",
+    y = expression(Intrasexual~variance~"in"~mating~success~(italic(I)[m]~";"~mean~"\u00B1"~"95%"~CI)),
+    color = "Sex", fill = "Sex"
+  ) +
+  theme_minimal() +
+  theme(legend.position = c(0.3, 0.77),
+        legend.title = element_blank(),
+        text = element_text(family = "Lato")) +
+  scale_fill_manual(values = c("#F28E2B", "#4E79A7"),
+  labels = c("Female", "Male")) +
+  scale_color_manual(values = c("#F28E2B", "#4E79A7"),
+  labels = c("Female", "Male"))
+```
+
+#### Get estimated marginal means and contrasts
+```{r}
+# no sex differences in low and equal mate availability contexts
+# significant difference between males and females in the high mate availability context
+emm_sex_v_availability <- emmeans(mod_tweedie_ma, ~ sex | mate_availabilty)
+contrast(emm_sex_v_availability, "pairwise")  # compares males vs females within each mate availability group
+emm_sex_v_availability_df <- 
+  as.data.frame(contrast(emm_sex_v_availability, "pairwise"))
+
+# no difference among groups for females
+# significant difference between low and high mate availability for males
+emm_availability_v_sex <- emmeans(mod_tweedie_ma, ~ mate_availabilty | sex)
+contrast(emm_availability_v_sex, "pairwise") # compares availability group within each sex
+emm_availability_v_sex_df <- 
+  as.data.frame(contrast(emm_availability_v_sex, "pairwise"))
+
+# Females have on average ~35% of the I_m values of males in the high mate availability group
+est <- emm_sex_v_availability_df %>% filter(mate_availabilty == "high") %>% pull(estimate)
+se <- emm_sex_v_availability_df %>% filter(mate_availabilty == "high") %>% pull(SE)
+lower <- est - 1.96 * se
+upper <- est + 1.96 * se
+
+ratio <- exp(est)
+lower_ci <- exp(lower)
+upper_ci <- exp(upper)
+
+cat("Ratio (F / M) in high group:", round(ratio, 3), "\n95% CI:", round(lower_ci, 3), "-", round(upper_ci, 3), "\n")
+
+# Females have on average ~13% of the I_m values of males in the high mate availability group
+est <- emm_availability_v_sex_df %>% filter(sex == "M" & contrast == "low - high") %>% pull(estimate)
+se <- emm_availability_v_sex_df %>% filter(sex == "M" & contrast == "low - high") %>% pull(SE)
+lower <- est - 1.96 * se
+upper <- est + 1.96 * se
+
+ratio <- exp(est)
+lower_ci <- exp(lower)
+upper_ci <- exp(upper)
+
+cat("Ratio (low / high) in males:", round(ratio, 3), "\n95% CI:", round(lower_ci, 3), "-", round(upper_ci, 3), "\n")
+```
+
+## Male investment in spermatophore
+#### data preparation
+```{r}
+nuptial_gift_tuba <-
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "nuptial_gift", 
+             col_types = "text") %>% 
+  mutate(weight_before_1 = as.numeric(weight_before_1),
+         weight_before_2 = as.numeric(weight_before_2),
+         weight_before_3 = as.numeric(weight_before_3),
+         weight_after = as.numeric(weight_after)) %>% 
+  mutate(weight_before = case_when(
+    !is.na(weight_before_3) ~ weight_before_3,
+    is.na(weight_before_3) & !is.na(weight_before_1) & !is.na(weight_before_2) ~ (weight_before_1 + weight_before_2) / 2,
+    is.na(weight_before_3) & is.na(weight_before_2) ~ weight_before_1,
+    is.na(weight_before_3) & is.na(weight_before_1) ~ weight_before_2
+  )) %>% 
+  mutate(spermatophore_investment = weight_before - weight_after)
+
+collection_tuba <-
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "collection", 
+             col_types = "text") %>% 
+  mutate(ID = str_remove(ID, "_"),
+         leg_length = as.numeric(leg_length),
+         weight_day1 = as.numeric(weight_day1),
+         weight_day2 = as.numeric(weight_day2),
+         weight_day3 = as.numeric(weight_day3)) %>% 
+    filter(ID %in% nuptial_gift_tuba$male_ID) %>%
+  pivot_longer(
+    cols = starts_with("weight_day"),         # columns to pivot
+    names_to = "day",                         # new column for the day
+    values_to = "weight",                     # new column for the values
+    names_prefix = "weight_day",              # strip prefix from day column
+    names_transform = list(day = as.integer)  # convert day to integer
+  ) %>% 
+  # this sex must be a male (has nuptial gift data and is male in the sexual_network data)
+  mutate(sex = ifelse(ID == "6W", "m", sex)) %>%
+  mutate(ASR_treatment = ifelse(ID == "20O", "UB", ASR_treatment)) %>%
+  mutate(leg_length_c = leg_length - mean(leg_length, na.rm = TRUE)) %>% 
+  mutate(day = as.character(day))
+```
+
+##### pre-analysis: temporal weight dynamics
+```{r}
+# Fit LMM
+mod <- lmer(weight ~ leg_length + day + (1 + ID) + (1 | cage), data = collection_tuba, na.action = na.omit)
+
+summary(mod)
+```
+
+##### pre-analysis: scaled mass index
+```{r}
+collection_tuba_avg <- 
+  collection_tuba %>% 
+  group_by(ID) %>% 
+  mutate(mean_weight = mean(weight, na.rm = TRUE)) %>%
+  select(ID, cage, colour, batch, sex, leg_length, 
+         ASR_treatment, notes, mean_weight) %>% 
+  distinct()
+
+ind_mass_leg_mod <- 
+  lmer(weight ~ day_n + leg_length_c + batch + (1 | ID), 
+       data = collection_tuba %>% mutate(day_n = as.numeric(day)))
+
+summary(ind_mass_leg_mod)
+
+cor.test(log(collection_tuba_avg$mean_weight), log(collection_tuba_avg$leg_length)) # r = 0.636
+
+
+
+smi_ <- 
+  scaledMassIndex(x = collection_tuba %>% 
+                    ungroup() %>% 
+                    dplyr::select(weight, leg_length) %>% 
+                    na.omit() %>% 
+                    pull(leg_length), 
+                  y = collection_tuba %>% 
+                    ungroup() %>% 
+                    dplyr::select(weight, leg_length) %>% 
+                    na.omit() %>% 
+                    pull(weight))
+
+collection_tuba_smi <-
+  collection_tuba %>% 
+  filter(!is.na(weight)) %>% 
+  bind_cols(., smi_) %>% 
+  dplyr::select(ID, cage, colour, batch, sex, leg_length, ASR_treatment, notes, day, weight, SMI.ols) %>% 
+  rename(smi_body = SMI.ols,
+         male_ID = ID) %>% 
+  left_join(., nuptial_gift_tuba %>% select(male_ID, day, 
+                                            spermatophore_investment), 
+            by = c("male_ID", "day")) %>% 
+  filter(!is.na(spermatophore_investment))
+
+cor.test(log(collection_tuba_smi$spermatophore_investment), log(collection_tuba_smi$leg_length)) # r = 0.2675437
+
+smi_ <- 
+  scaledMassIndex(x = collection_tuba_smi %>% 
+                    ungroup() %>% 
+                    dplyr::select(spermatophore_investment, leg_length) %>% 
+                    na.omit() %>% 
+                    pull(leg_length), 
+                  y = collection_tuba_smi %>% 
+                    ungroup() %>% 
+                    dplyr::select(spermatophore_investment, leg_length) %>% 
+                    na.omit() %>% 
+                    pull(spermatophore_investment))
+
+collection_tuba_smi <-
+  collection_tuba_smi %>% 
+  filter(!is.na(weight)) %>% 
+  bind_cols(., smi_) %>% 
+  dplyr::select(male_ID, cage, colour, batch, sex, leg_length, ASR_treatment, notes, day, weight, smi_body, spermatophore_investment, SMI.ols) %>% 
+  rename(smi_spermatophore = SMI.ols) %>% 
+  mutate(prop_invest = smi_spermatophore/smi_body) %>% 
+  mutate(mate_availabilty = ifelse((sex == "F" & ASR_treatment == "MB") | (sex == "M" & ASR_treatment == "FB"), "high",
+                                   ifelse((sex == "F" & ASR_treatment == "FB") | (sex == "M" & ASR_treatment == "MB"), "low",
+                                          "equal"))) %>% 
+  mutate(ASR_treatment = factor(ASR_treatment, levels = c("UB", "FB", "MB")),
+         mate_availabilty = factor(mate_availabilty,
+                                   levels = c("equal", "low", "high")))
+
+cor.test(log(collection_tuba_smi$smi_spermatophore), log(collection_tuba_smi$smi_body)) # r = 0.3138544
+
+collection_tuba_smi %>% 
+  group_by(male_ID) %>% 
+  summarise(n_measures = n()) %>% 
+  arrange(desc(n_measures))
+```
+
+#### analysis
+```{r}
+mod_smi2 <- lmer(
+  smi_spermatophore ~ ASR_treatment + smi_body + batch + (1 | cage),
+  data = collection_tuba_smi,
+  na.action = na.omit
+)
+
+summary(mod_smi2)
+
+# no differences in spermatophore across ASR treatments
+# significant difference between males and females in the high mate availability context
+emm_gift_ASR <- emmeans(mod_smi2, ~ ASR_treatment)
+contrast(emm_gift_ASR, "pairwise")  # compares males vs females within each mate availability group
+
+# Generate predictions from the model for each ASR_treatment and smi_body
+preds <- 
+  ggpredict(mod_smi2, terms = c("ASR_treatment")) %>% 
+  as.data.frame() %>%
+  mutate(ASR_treatment = factor(x, levels = c("FB", "UB", "MB"))) 
+
+ggplot() +
+  # Raw data (right side, jittered)
+  geom_half_point(
+    data = collection_tuba_smi,
+    aes(x = ASR_treatment, y = smi_spermatophore),
+    side = "r",
+    width = 0.3,
+    alpha = 0.4,
+    size = 2,
+  position = position_nudge(x = 0.15)
+  ) +
+
+  # Model means (left side)
+  geom_point(
+    data = preds,
+    aes(x = ASR_treatment, y = predicted),
+    size = 3,
+  position = position_nudge(x = -0.15)
+  ) +
+  
+  # Error bars for model means (left side)
+  geom_errorbar(
+    data = preds,
+    aes(
+      x = ASR_treatment,
+      ymin = conf.low,
+      ymax = conf.high
+    ),
+    width = 0.05,
+    inherit.aes = FALSE,
+  position = position_nudge(x = -0.15)
+  ) +
+
+  theme_minimal() +
+  theme(text = element_text(family = "Lato")) +
+  labs(
+    x = "Adult sex ratio",
+    y = "Scaled spermatophore mass index (mean \u00B1 95% CI)"
+  ) +
+
+  scale_x_discrete(
+    labels = c(
+      "UB" = "Unbiased",
+      "FB" = "Female biased",
+      "MB" = "Male biased"
+    )
+  )
+
+# Generate predictions over smi_body for each ASR_treatment
+preds <- ggpredict(
+  mod_smi2,
+  terms = c("smi_body [all]", "ASR_treatment"),
+  type = "fixed"  # ignores random intercepts for cleaner lines
+) %>%
+  as.data.frame()
+
+# Plot
+ggplot() +
+  # Raw data
+  geom_point(
+    data = collection_tuba_smi,
+    aes(x = smi_body, y = smi_spermatophore, color = ASR_treatment),
+    alpha = 0.5
+  ) +
+  # Prediction lines
+  geom_line(
+    data = preds,
+    aes(x = x, y = predicted, color = group),
+    size = 1
+  ) +
+  # Confidence ribbon
+  geom_ribbon(
+    data = preds,
+    aes(x = x, ymin = conf.low, ymax = conf.high, fill = group),
+    alpha = 0.2,
+    color = NA
+  ) +
+  scale_color_brewer(palette = "Dark2", labels = c(
+      "UB" = "Unbiased",
+      "FB" = "Female biased",
+      "MB" = "Male biased"
+    )) +
+  scale_fill_brewer(palette = "Dark2", labels = c(
+      "UB" = "Unbiased",
+      "FB" = "Female biased",
+      "MB" = "Male biased"
+    )) +
+  labs(
+    x = "Scaled body mass",
+    y = "Scaled spermatophore mass",
+    color = "Adult sex ratio",
+    fill = "Adult sex ratio"
+  ) +
+  theme_classic()
+```
+
+## Refractory period
+#### males: data preparation
+```{r}
+refractory_tuba <- 
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "male_refractory_period", 
+             col_types = "text") %>% 
+  arrange(male_ID, day, time_point) %>% 
+  mutate(male_ID_day = paste(male_ID, day, sep = "_"))
+
+sexual_network_tuba <- 
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "sexual_network", 
+             col_types = "text") %>% 
+  arrange(cage, batch, ASR_treatment, day, male_ID, female_ID) %>% 
+  mutate(male_ID_day = paste(male_ID, day, sep = "_"))
+
+first_mating_day <- 
+  sexual_network_tuba %>% 
+  group_by(male_ID) %>% 
+  summarise(min_day = min(day))
+
+refractory_tuba_ <- 
+  sexual_network_tuba %>% 
+  select(male_ID_day, ASR_treatment) %>% 
+  distinct() %>% 
+  right_join(., refractory_tuba, by = c("male_ID_day")) %>%
+  # make sure day is numeric
+  mutate(day_n = as.numeric(day),
+         time_point = ifelse(time_point == 1, "20:20:00",
+                             ifelse(time_point == 2, "21:20:00",
+                                    ifelse(time_point == 3, "22:20:00",
+                                           ifelse(time_point == 4, "23:20:00", "XXX"))))) %>%
+  mutate(
+    timestamp = as.POSIXct(
+      paste(day, "June", "2025", time_point),
+      format = "%d %B %Y %H:%M:%S",
+      tz = "UTC" # or your local timezone
+    )
+  )
+
+# Define all days and time points
+all_days <- 1:7
+all_times <- c("20:20:00", "21:20:00", "22:20:00", "23:20:00")
+
+df_completed <- refractory_tuba_ %>%
+  # Make sure day is numeric
+  mutate(day = as.numeric(day)) %>%
+  # Complete the grid for each male_ID
+  complete(
+    male_ID,
+    day = all_days,
+    time_point = all_times,
+    fill = list(singing = "M")
+  ) %>%
+  # Recreate male_ID_day
+  mutate(
+    male_ID_day = paste0(male_ID, "_", day),
+    day_n = day,
+    # Fill in other columns if needed
+    ASR_treatment = first(ASR_treatment[!is.na(ASR_treatment)]),
+    comments = ifelse(is.na(comments), NA, comments)
+  ) %>%
+  # Reorder columns like original
+  select(male_ID_day, ASR_treatment, male_ID, 
+         day, time_point, singing, comments, day_n) %>%
+  mutate(
+    timestamp = as.POSIXct(
+      paste(day, "June", "2025", time_point),
+      format = "%d %B %Y %H:%M:%S",
+      tz = "UTC" # or your local timezone
+    )
+  ) %>% 
+  arrange(male_ID_day) %>%
+  left_join(first_mating_day, by = "male_ID") %>%
+  mutate(
+    day = as.numeric(day),
+    min_day = as.numeric(min_day)
+  ) %>%
+  filter(day >= min_day) %>%
+  select(-min_day) %>%  # optional: drop the helper column
+  mutate(singing = ifelse(singing == "N", "M", singing))
+
+df_periods <- df_completed %>%
+  arrange(male_ID, timestamp) %>%
+  # Keep only M or Y states
+  filter(singing %in% c("M", "Y")) %>%
+  group_by(male_ID) %>%
+  # Identify changes in singing state (start of new period if state changes OR time gap)
+  mutate(
+    state_change = singing != lag(singing, default = first(singing)),
+    new_period = state_change | is.na(lag(singing)),
+    period = cumsum(new_period)
+  ) %>%
+  group_by(male_ID, singing_state = singing, period) %>%
+  summarise(
+    start_time = min(timestamp),
+    end_time   = max(timestamp),
+    duration   = as.numeric(difftime(max(timestamp), min(timestamp), units = "mins")),
+    .groups = "drop"
+  ) %>% 
+  arrange(male_ID, period, singing_state) %>% 
+  left_join(., sexual_network_tuba %>% 
+              select(-c(female_ID, male_ID_day, day)) %>%
+              mutate(ASR_treatment = ifelse(male_ID == "41B", "UB", ASR_treatment)) %>% 
+              distinct(), 
+            by = "male_ID") %>%
+  arrange(male_ID, period) %>%
+  group_by(male_ID) %>%
+  mutate(
+    start_time = if_else(period == 1, start_time, lag(end_time)),
+    duration = as.numeric(difftime(end_time, start_time, units = "mins"))
+  ) %>%
+  ungroup() %>% 
+  rename(refractory = singing_state) %>% 
+  mutate(refractory = ifelse(refractory == "M", "out", "in"))
+
+df_long <- df_periods %>%
+  arrange(male_ID, period) %>%
+  pivot_longer(
+    cols = c(start_time, end_time),
+    names_to = "time_point",
+    values_to = "timestamp"
+  ) %>%
+  mutate(time_point = recode(time_point, start_time = "start", end_time = "end"))
+
+# Ensure data is ordered
+df_long <- df_long %>%
+  arrange(male_ID, timestamp)
+
+df_long2_FB <- df_long %>% filter(ASR_treatment == "FB") %>%
+  mutate(
+    refractory_num = ifelse(refractory == "in", 1, 0),
+    male_offset = as.numeric(factor(male_ID)) * 1.5   # vertical spacing
+  )
+
+# Calculate number of "out" phases per male
+male_rank <- df_long2_FB %>%
+  filter(refractory == "out") %>%
+  group_by(male_ID) %>%
+  summarise(n_out = n()/2) %>%  # divide by 2 because each period has start + end rows
+  arrange(desc(n_out)) %>%
+  mutate(rank = row_number())  # optional numeric rank
+
+# Reorder factor levels for plotting
+df_long2_FB <- df_long2_FB %>%
+  left_join(male_rank %>% select(male_ID, n_out), by = "male_ID") %>%
+  mutate(male_ID = factor(male_ID, levels = rev(male_rank$male_ID)))  # top = most out
+
+df_long2_MB <- df_long %>% filter(ASR_treatment == "MB") %>%
+  mutate(
+    refractory_num = ifelse(refractory == "in", 1, 0),
+    male_offset = as.numeric(factor(male_ID)) * 1.5   # vertical spacing
+  )
+# Calculate number of "out" phases per male
+male_rank <- df_long2_MB %>%
+  filter(refractory == "out") %>%
+  group_by(male_ID) %>%
+  summarise(n_out = n()/2) %>%  # divide by 2 because each period has start + end rows
+  arrange(desc(n_out)) %>%
+  mutate(rank = row_number())  # optional numeric rank
+
+# Reorder factor levels for plotting
+df_long2_MB <- df_long2_MB %>%
+  left_join(male_rank %>% select(male_ID, n_out), by = "male_ID") %>%
+  mutate(male_ID = factor(male_ID, levels = rev(male_rank$male_ID)))  # top = most out
+
+df_long2_UB <- df_long %>% filter(ASR_treatment == "UB") %>%
+  mutate(
+    refractory_num = ifelse(refractory == "in", 1, 0),
+    male_offset = as.numeric(factor(male_ID)) * 1.5   # vertical spacing
+  )
+# Calculate number of "out" phases per male
+male_rank <- df_long2_UB %>%
+  filter(refractory == "out") %>%
+  group_by(male_ID) %>%
+  summarise(n_out = n()/2) %>%  # divide by 2 because each period has start + end rows
+  arrange(desc(n_out)) %>%
+  mutate(rank = row_number())  # optional numeric rank
+
+# Reorder factor levels for plotting
+df_long2_UB <- df_long2_UB %>%
+  left_join(male_rank %>% select(male_ID, n_out), by = "male_ID") %>%
+  mutate(male_ID = factor(male_ID, levels = rev(male_rank$male_ID)))  # top = most out
+
+library(patchwork)
+
+# Plot with males ranked by number of "out" periods
+FB_refractory_plot <- 
+  ggplot(df_long2_FB, 
+         aes(x = timestamp, y = male_ID, group = male_ID, color = refractory)) +
+    geom_line(size = 2) +
+    scale_color_brewer(palette = "Dark2") +
+    labs(x = "Day", y = "Male ID", color = "Mating pool") +
+    theme_minimal() +
+    theme(legend.position = "none", 
+          axis.title.x = element_blank()) +
+  scale_x_datetime(date_labels = "%e")
+
+MB_refractory_plot <- 
+  ggplot(df_long2_MB, 
+         aes(x = timestamp, y = male_ID, group = male_ID, color = refractory)) +
+    geom_line(size = 2) +
+    scale_color_brewer(palette = "Dark2") +
+    labs(x = "Day", y = "Male ID", color = "Mating pool") +
+    theme_minimal() +
+    theme(legend.position = "none", 
+          axis.title.x = element_blank(), 
+          axis.title.y = element_blank()) +
+  scale_x_datetime(date_labels = "%e")
+
+UB_refractory_plot <- 
+  ggplot(df_long2_UB, 
+         aes(x = timestamp, y = male_ID, group = male_ID, color = refractory)) +
+    geom_line(size = 2) +
+    scale_color_brewer(palette = "Dark2") +
+    labs(x = "Day", y = "Male ID", color = "Mating pool") +
+    theme_minimal() +
+    theme(legend.position = "bottom", 
+          axis.title.y = element_blank()) +
+  scale_x_datetime(date_labels = "%e")
+
+FB_refractory_plot + UB_refractory_plot + MB_refractory_plot
+
+df_long %>% arrange(male_ID, period) %>% 
+  filter(male_ID %in% c("34P", "38P"))
+
+refractory_tuba %>% 
+  filter(male_ID == c("34P", "38P"))
+
+hist(df_periods$duration)
+
+ggplot(df_periods) +
+  geom_histogram(aes(x = duration)) +
+  facet_grid(ASR_treatment ~ refractory)
+```
+
+#### males: analysis
+```{r}
+library(nlme)
+library(dplyr)
+
+# Make period numeric (if not already)
+df_periods <- df_periods %>%
+  mutate(period_num = as.numeric(period),
+         refractory_factor = factor(refractory, levels = c("out", "in")))  # optional
+
+# Model only "out" phases
+df_out <- df_periods %>% filter(refractory_factor == "out")
+
+# Intercept ≈ 3153 → baseline "out" duration for reference ASR treatment, period_num = 0, batch 1.
+# ASR_treatmentMB = 790, significant → males in MB treatment spend ~790 more units of time in "out" than reference (FB).
+# ASR_treatmentUB = 561, borderline → males in UB treatment spend ~561 more units than FB.
+# period_num: negative but not significant → no strong trend over periods.
+# batch2 = -767, significant → batch 2 shows shorter "out" durations than batch 1.
+# Residuals look reasonable; random effects are small but meaningful.
+m_out2_nested <- lme(
+  fixed = duration ~ ASR_treatment + period_num + batch,
+  random = ~ 1 + period_num | cage/male_ID,
+  data = df_out,
+  method = "REML"
+)
+
+summary(m_out2_nested)
+
+
+# Model only "in" phases
+df_in <- df_periods %>% filter(refractory_factor == "in")
+
+# Intercept ≈ 568 → baseline "in" duration for reference ASR treatment (FB), period_num = 0, batch 1.
+# ASR_treatmentMB ≈ 14, not significant → males in MB treatment show essentially no change in "in" duration relative to FB.
+# ASR_treatmentUB ≈ -25, not significant → males in UB treatment also show no meaningful difference from FB.
+# period_num ≈ 28, not significant → no strong trend in "in" duration over successive periods.
+# batch2 ≈ -137, not significant → batch 2 shows slightly shorter "in" durations than batch 1, but effect is weak.
+# Residuals look reasonable; random effects for cage and male_ID are moderate, reflecting some variation among individuals and cages.
+m_in2_nested <- lme(
+  fixed = duration ~ ASR_treatment + period_num + batch,
+  random = ~ 1 + period_num | cage/male_ID,
+  data = df_in,
+  method = "REML"
+)
+
+summary(m_in2_nested)
+
+library(emmeans)
+emmeans(m_out2_nested, ~ ASR_treatment)
+emmeans(m_in2_nested, ~ ASR_treatment)
+
+# Contrasts for "out" duration
+emm_out <- emmeans(m_out2_nested, ~ ASR_treatment)
+pairs(emm_out, adjust = "none")   # or adjust="tukey"
+
+# Contrasts for "in" duration
+emm_in <- emmeans(m_in2_nested, ~ ASR_treatment)
+pairs(emm_in, adjust = "none")   # or adjust="tukey"
+```
+
+#### males: plotting effect of ASR on refractory periods
+```{r}
+# Prepare a combined data frame for plotting
+emm_out <- as.data.frame(emmeans(m_out2_nested, ~ ASR_treatment)) %>%
+  mutate(phase = "out")
+
+emm_in <- as.data.frame(emmeans(m_in2_nested, ~ ASR_treatment)) %>%
+  mutate(phase = "in")
+
+emm_all <- bind_rows(emm_out, emm_in)
+
+# Plot
+ggplot(emm_all %>% mutate(ASR_treatment = factor(ASR_treatment, levels = c("FB", "UB", "MB"))), aes(x = ASR_treatment, y = emmean/60, color = phase, fill = phase)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6, alpha = 0.6) +
+  geom_errorbar(aes(ymin = lower.CL/60, ymax = upper.CL/60), 
+                position = position_dodge(width = 0.7), width = 0.2) +
+  labs(
+    x = "ASR Treatment",
+    y = "Estimated Duration (hours)",
+    title = "Estimated Marginal Means of\n'Out' and 'In' Durations by ASR Treatment"
+  ) +
+  scale_color_brewer(palette = "Dark2", name = "Mating pool") +
+  scale_fill_brewer(palette = "Dark2", name = "Mating pool") +
+  theme_minimal(base_size = 14)
+```
+
+#### females: data preparation
+```{r}
+sexual_network_tuba <- 
+  read_excel("data/raw/ASR_metrics.xlsx", 
+             sheet = "sexual_network", 
+             col_types = "text") %>% 
+  arrange(cage, batch, ASR_treatment, day, male_ID, female_ID) %>% 
+  mutate(male_ID_day = paste(male_ID, day, sep = "_")) %>%
+  mutate(day = as.numeric(day))
+
+# Calculate days between encounters with distinct males for each female
+female_male_gaps <- sexual_network_tuba %>%
+  mutate(day = as.numeric(day)) %>%
+  arrange(female_ID, day) %>%              # sort by female and day
+  group_by(female_ID) %>%
+  mutate(prev_male_day = lag(day, order_by = day),
+         prev_male_ID  = lag(male_ID, order_by = day)) %>%
+  filter(male_ID != prev_male_ID | is.na(prev_male_ID)) %>%  # only distinct males
+  mutate(days_since_prev_male = ifelse(
+    is.na(prev_male_day), day - 1, day - prev_male_day
+  )) %>%
+  ungroup() %>%
+  select(female_ID, male_ID, day, days_since_prev_male, cage, batch, ASR_treatment)
+
+female_male_gaps
+```
+#### females: analysis
+```{r}
+# Make sure numeric variables are numeric
+female_male_gaps <- female_male_gaps %>%
+  mutate(day = as.numeric(day),
+         days_since_prev_male = as.numeric(days_since_prev_male))
+
+m_days_simple <- lme(
+  fixed = days_since_prev_male ~ ASR_treatment + day + batch,
+  random = ~ 1 | female_ID,
+  data = female_male_gaps,
+  method = "REML"
+)
+
+# Intercept ≈ -0.65 → baseline days_since_prev_male for reference ASR treatment (FB), day = 0, batch 1.
+# ASR_treatmentMB = -0.29, significant → females in MB treatment see a slightly shorter interval to the next male compared with FB.
+# ASR_treatmentUB = -0.065, not significant → no clear difference for UB females versus FB.
+# day = 0.87, highly significant → days_since_prev_male increases strongly with time, indicating later days have longer intervals.
+# batch2 = -0.036, not significant → no substantial difference between batches.
+# Random effects: female-level variance small but meaningful (SD ≈ 0.15), residual variance larger (SD ≈ 0.49).
+# Residuals: look reasonable; standardized residuals mostly within ±2.
+# This model captures the temporal trend and the ASR effect while accounting for repeated measures per female.
+
+summary(m_days_simple)
+```
+
+#### females: plotting effect of ASR on refractory periods
+```{r}
+library(emmeans)
+library(ggplot2)
+
+# Get estimated marginal means for ASR_treatment, averaged over day and batch
+em_days <- emmeans(m_days_simple, ~ ASR_treatment)
+
+# Convert to tibble for plotting
+em_days_df <- as.data.frame(em_days)
+
+# Basic plot
+ggplot(em_days_df %>% mutate(ASR_treatment = factor(ASR_treatment, levels = c("FB", "UB", "MB"))),
+       aes(x = ASR_treatment, y = emmean, color = ASR_treatment)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2) +
+  labs(
+    x = "ASR treatment",
+    y = "Estimated days since previous male",
+    title = "Effect of ASR treatment on female mating intervals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+```
